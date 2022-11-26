@@ -15,8 +15,7 @@ make
 
 - `my_malloc_benchtest/bench-malloc-thread`: 测试两秒内 my malloc 完成多少迭代，可测多线程。
 - `glibc_benchtest/bench-malloc-thread`: 测试两秒内 ptmalloc 完成多少迭代，可测多线程，与 my malloc 进行对比。
-- `simple_test`: 测试 my malloc 中 heap 的创建与销毁（取消 printf 注释）。
-
+- `simple_test`: 测试 my malloc 中 heap 的创建与销毁。
 ## 不足
 
 - 不知道如何设置线程退出时自动 detach arena，只能手动调用 `exit_malloc()`；
