@@ -119,17 +119,17 @@ struct malloc_config {
 /* 将用户地址转为 chunk 地址 */
 #define mem2chunk(mem) ((mchunkptr)((char*)(mem)-2 * SIZE_SZ))
 
-/* 根据 chunk 指针找到所属的 heap_info */
-#define heap_for_ptr(p) ((heap_info*)((unsigned long)(p) & ~(HEAP_MAX_SIZE - 1)))
-
-/* 获取 heap 结束的地址 */
-#define heap_end(p) ((char*)(p) + (p)->total_size)
-
 /* 获取更高地址块的地址 */
 #define higher_chunk(p) ((mchunkptr)((char*)(p) + chunksize(p)))
 
 /* 获取更低地址块的地址 */
 #define lower_chunk(p) ((mchunkptr)((char*)(p)-prevsize(p)))
+
+/* 根据 chunk 指针找到所属的 heap_info */
+#define heap_for_ptr(p) ((heap_info*)((unsigned long)(p) & ~(HEAP_MAX_SIZE - 1)))
+
+/* 获取 heap 结束的地址 */
+#define heap_end(p) ((char*)(p) + (p)->total_size)
 
 /* 两个地址是否在同一heap */
 #define is_same_heap(p1, p2) (heap_for_ptr(p1) == heap_for_ptr(p2))
@@ -188,10 +188,10 @@ static mstate arena_get();
 static heap_info* new_heap();
 
 /* 用 mmap 分配 chunk */
-static void* chunk_by_mmap(size_t bytes);
+static void* chunk_by_mmap(INTERNAL_SIZE_T nb);
 
 /* internal malloc */
-static void* int_malloc(mstate av, size_t bytes);
+static void* int_malloc(mstate av, INTERNAL_SIZE_T nb);
 
 /* heap 是否已经全空了 */
 static int is_heap_empty(heap_info* heap);
@@ -366,15 +366,18 @@ static mstate reused_arena() {
     result = next_to_use;
     do {
         if (pthread_mutex_trylock(&result->mutex) == 0) {
-            break;
+            pthread_mutex_unlock(&next_use_lock);
+            goto out;
         }
         result = result->next;
     } while (result != next_to_use);
-    next_to_use = result->next;
+
     pthread_mutex_unlock(&next_use_lock);
 
     pthread_mutex_lock(&result->mutex); /* 可能阻塞 */
 
+out:
+    next_to_use = result->next;
     if (result->attached_threads == 0) { /* 如果原来是空闲的，要把它从链表中取下 */
         pthread_mutex_lock(&free_list_lock);
         mstate* previous = &free_arena_list;
@@ -416,9 +419,8 @@ static mstate arena_get() {
     }
 }
 
-static void* chunk_by_mmap(size_t bytes) {
-    INTERNAL_SIZE_T nb        = request2size(bytes);
-    size_t          mmap_size = ((unsigned long)nb + mcconfig.pagesize) & ~mcconfig.pagesize;
+static void* chunk_by_mmap(size_t nb) {
+    size_t mmap_size = ((unsigned long)nb + mcconfig.pagesize) & ~mcconfig.pagesize;
 
     mchunkptr result = (mchunkptr)mmap(NULL, mmap_size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (result == MAP_FAILED) {
@@ -432,14 +434,13 @@ static void* chunk_by_mmap(size_t bytes) {
     return chunk2mem(result);
 }
 
-static void* int_malloc(mstate av, size_t bytes) {
+static void* int_malloc(mstate av, INTERNAL_SIZE_T nb) {
     // check_list(av);
 
-    INTERNAL_SIZE_T nb       = request2size(bytes); /* normalized chunk size */
-    mchunkptr       iter     = av->head;            /* 迭代器 */
-    mchunkptr       result   = NULL;                /* 目标 chunk */
-    mchunkptr       old_tail = NULL;                /* 未分配前 av 的尾部块 */
-    mchunkptr       higher   = NULL;                /* result 更高地址块 */
+    mchunkptr iter     = av->head; /* 迭代器 */
+    mchunkptr result   = NULL;     /* 目标 chunk */
+    mchunkptr old_tail = NULL;     /* 未分配前 av 的尾部块 */
+    mchunkptr higher   = NULL;     /* result 更高地址块 */
 
     assert(iter != NULL);
     for (; iter != av->tail; iter = iter->fd) {
@@ -638,8 +639,10 @@ void* my_malloc(size_t bytes) {
         malloc_initialized = true;
     }
 
-    if (bytes >= MMAP_THRESHOLD) {
-        return chunk_by_mmap(bytes);
+    INTERNAL_SIZE_T nb = request2size(bytes);
+
+    if (nb >= MMAP_THRESHOLD) {
+        return chunk_by_mmap(nb);
     }
 
     mstate ar_ptr = arena_get();
@@ -648,7 +651,7 @@ void* my_malloc(size_t bytes) {
         return NULL;
     }
 
-    void* mem = int_malloc(ar_ptr, bytes);
+    void* mem = int_malloc(ar_ptr, nb);
 
     // printf("malloc chunk size %ld, addr %p\n", chunksize(mem2chunk(mem)), mem2chunk(mem));
     // mchunkptr iter = ar_ptr->head;
